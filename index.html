@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
+    <title>PDF Sign Tools</title>
+    
+    <style>
+    #stamp-wrapper {
+        border: 1px dashed #666;
+    }
+    .handle {
+        width: 12px; height: 12px;
+        background: #fff; border:1px solid #000;
+        position:absolute;
+    }
+    .handle-br { bottom:-6px; right:-6px; cursor:se-resize; }
+    .handle-tr { top:-6px; right:-6px; cursor:ne-resize; }
+    .handle-bl { bottom:-6px; left:-6px; cursor:sw-resize; }
+    .handle-tl { top:-6px; left:-6px; cursor:nw-resize; }
+    </style>
+</head>
+<body style="background-color: lightgray;overflow-y: hidden;overflow-x: hidden;">
+    <div style="padding: 10px;">
+        <div class="row">
+            <div class="col-2">
+                <img id="img_logo" src="./pdfsign.png" alt="imglogo" style="width: 100%;">
+            </div>
+            <div class="col-3">
+                <label>Choose PDF File</label>
+                <input placeholder="Choose PDF File" class="form-control" type="file" id="pdf-upload" accept="application/pdf">
+            </div>
+            <div class="col-3">
+                <label>Choose Sign Image</label>
+                <input placeholder="Choose Sign Image" class="form-control" type="file" id="img-upload" accept="image/*">
+            </div>
+            <div class="col-2">
+                <label class="mt-4">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" value="" id="apply-all">
+                        <label class="form-check-label" for="apply-all">
+                            Apply to every page
+                        </label>
+                    </div>
+                </label>
+            </div>
+            <div class="col-1">
+                <button id="save" class="btn btn-md btn-success mt-4">Download</button>
+            </div>
+            <div class="col-1">
+                <button id="reset" class="btn btn-md btn-dark mt-4" onclick="window.location.reload();">Reset</button>
+            </div>
+        </div>
+    </div>
+
+    <div style="text-align: center;margin-top: -20px;color:maroon;font-weight: bold;"><p>This Tools Running on Your Browser Only, No Data Saved to Our Server. This Tools using Static Site Hosting.</p></div>
+    <div id="pdf-container" style="margin-top:0px;background-color: white;position: relative; width: 100%; height: 700px; overflow-y: scroll; border:1px solid #ccc;">
+        <div id="stamp-wrapper" style="position:absolute; display:none; z-index:10; cursor:move;">
+            <img id="stamp" style="width:150px; height:auto; display:block;">
+            <!-- resize handles -->
+            <div class="handle handle-br"></div>
+            <div class="handle handle-tr"></div>
+            <div class="handle handle-bl"></div>
+            <div class="handle handle-tl"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js" integrity="sha384-FKyoEForCGlyvwx9Hj09JcYn3nv7wiPVlz7YYwJrWVcXK/BmnVDxM+D2scQbITxI" crossorigin="anonymous"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.14.305/pdf.min.js"></script>
+    <script type="module">
+        import { PDFDocument } from "https://cdn.skypack.dev/pdf-lib";
+
+        let pdfBytes, imgFile;
+        let pdfPageSizes = [];
+        let canvasScale = 1.5;
+
+        const container = document.getElementById("pdf-container");
+        const stampWrapper = document.getElementById("stamp-wrapper");
+        const stamp = document.getElementById("stamp");
+
+        let origW, origH; // for aspect ratio
+
+        // === Load PDF (multi-page) ===
+        document.getElementById("pdf-upload").addEventListener("change", async (e) => {
+        const file = e.target.files[0];
+        pdfBytes = await file.arrayBuffer();
+
+        const loadingTask = pdfjsLib.getDocument({ data: pdfBytes });
+        const pdf = await loadingTask.promise;
+
+        container.innerHTML = "";
+        pdfPageSizes = [];
+
+        for (let i = 1; i <= pdf.numPages; i++) {
+            const page = await pdf.getPage(i);
+            const viewport = page.getViewport({ scale: canvasScale });
+
+            const canvas = document.createElement("canvas");
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            canvas.dataset.pageIndex = i - 1;
+
+            const ctx = canvas.getContext("2d");
+            await page.render({ canvasContext: ctx, viewport }).promise;
+
+            pdfPageSizes.push({
+            width: page.view[2],
+            height: page.view[3],
+            canvasWidth: viewport.width,
+            canvasHeight: viewport.height,
+            });
+
+            const wrapper = document.createElement("div");
+            wrapper.style.position = "relative";
+            wrapper.style.marginBottom = "20px";
+            wrapper.appendChild(canvas);
+            container.appendChild(wrapper);
+        }
+
+        container.appendChild(stampWrapper); // overlay on top
+        });
+
+        // === Upload stamp image ===
+        document.getElementById("img-upload").addEventListener("change", async (e) => {
+        imgFile = e.target.files[0];
+        const reader = new FileReader();
+        reader.onload = () => {
+            stamp.src = reader.result;
+            stampWrapper.style.display = "block";
+            stampWrapper.dataset.placed = "false";
+            stampWrapper.dataset.pageIndex = "";
+            stampWrapper.style.width = "150px";
+            stampWrapper.style.height = "auto";
+
+            // store original ratio
+            stamp.onload = () => {
+            origW = stamp.naturalWidth;
+            origH = stamp.naturalHeight;
+            const ratio = origW / origH;
+            stampWrapper.style.height = (150 / ratio) + "px";
+            };
+        };
+        reader.readAsDataURL(imgFile);
+        });
+
+        // === Stamp follows mouse until dropped ===
+        container.addEventListener("mousemove", (e) => {
+        if (stampWrapper.style.display === "block" && stampWrapper.dataset.placed === "false") {
+            const rect = container.getBoundingClientRect();
+            const x = e.clientX - rect.left + container.scrollLeft;
+            const y = e.clientY - rect.top + container.scrollTop;
+            stampWrapper.style.left = x - stampWrapper.offsetWidth / 2 + "px";
+            stampWrapper.style.top = y - stampWrapper.offsetHeight / 2 + "px";
+        }
+        });
+
+        // === Drop stamp on click ===
+        container.addEventListener("click", (e) => {
+        if (stampWrapper.style.display === "block" && stampWrapper.dataset.placed === "false") {
+            const canvases = container.querySelectorAll("canvas");
+            for (let canvas of canvases) {
+            const rect = canvas.getBoundingClientRect();
+            if (
+                e.clientX >= rect.left &&
+                e.clientX <= rect.right &&
+                e.clientY >= rect.top &&
+                e.clientY <= rect.bottom
+            ) {
+                stampWrapper.dataset.pageIndex = canvas.dataset.pageIndex;
+                stampWrapper.dataset.placed = "true";
+                break;
+            }
+            }
+        }
+        });
+
+        // === Dragging ===
+        let dragging = false, offsetX = 0, offsetY = 0;
+        stampWrapper.addEventListener("mousedown", (e) => {
+        if (e.target.classList.contains("handle")) return; // skip resize
+        if (stampWrapper.dataset.placed === "true") {
+            dragging = true;
+            offsetX = e.offsetX;
+            offsetY = e.offsetY;
+        }
+        });
+        document.addEventListener("mousemove", (e) => {
+        if (dragging) {
+            const rect = container.getBoundingClientRect();
+            stampWrapper.style.left = (e.clientX - rect.left - offsetX + container.scrollLeft) + "px";
+            stampWrapper.style.top = (e.clientY - rect.top - offsetY + container.scrollTop) + "px";
+        }
+        });
+        document.addEventListener("mouseup", () => {
+        dragging = false;
+        });
+
+        // === Resizing (keep aspect ratio) ===
+        let resizing = false, resizeHandle = null, startX=0, startY=0, startW=0, startH=0;
+        stampWrapper.querySelectorAll(".handle").forEach(handle => {
+        handle.addEventListener("mousedown", (e) => {
+            e.stopPropagation();
+            resizing = true;
+            resizeHandle = e.target;
+            startX = e.clientX;
+            startY = e.clientY;
+            startW = stampWrapper.offsetWidth;
+            startH = stampWrapper.offsetHeight;
+        });
+        });
+        document.addEventListener("mousemove", (e) => {
+        if (resizing) {
+            let dx = e.clientX - startX;
+            let dy = e.clientY - startY;
+
+            let d = Math.max(dx, dy); // pick larger move for uniform scaling
+            if (resizeHandle.classList.contains("handle-tl") ||
+                resizeHandle.classList.contains("handle-bl")) {
+            d = -Math.max(-dx, dy);
+            }
+
+            let newW = startW + d;
+            if (newW < 30) newW = 30;
+
+            let ratio = origH / origW;
+            let newH = newW * ratio;
+
+            stampWrapper.style.width = newW + "px";
+            stampWrapper.style.height = newH + "px";
+            stamp.style.width = "100%";
+            stamp.style.height = "100%";
+        }
+        });
+        document.addEventListener("mouseup", () => {
+        resizing = false;
+        resizeHandle = null;
+        });
+
+        // === Save signed PDF ===
+        document.getElementById("save").addEventListener("click", async () => {
+        if (!pdfBytes || !imgFile) {
+            alert("Upload PDF & Image first!");
+            return;
+        }
+        if (stampWrapper.dataset.pageIndex === "") {
+            alert("Place the stamp on a page first!");
+            return;
+        }
+
+        const applyAll = document.getElementById("apply-all").checked;
+        const pdfDoc = await PDFDocument.load(pdfBytes);
+
+        const imgBytes = await imgFile.arrayBuffer();
+        let embeddedImg;
+        if (imgFile.type.includes("png")) {
+            embeddedImg = await pdfDoc.embedPng(imgBytes);
+        } else {
+            embeddedImg = await pdfDoc.embedJpg(imgBytes);
+        }
+
+        const targetPages = applyAll
+            ? pdfDoc.getPages().map((_, i) => i) // all pages
+            : [parseInt(stampWrapper.dataset.pageIndex)]; // only selected page
+
+        // Base coordinates from the placed page
+        const basePageIndex = parseInt(stampWrapper.dataset.pageIndex);
+        const baseSize = pdfPageSizes[basePageIndex];
+        const stampRect = stampWrapper.getBoundingClientRect();
+        const canvasEl = container.querySelectorAll("canvas")[basePageIndex];
+        const canvasRect = canvasEl.getBoundingClientRect();
+
+        const relativeX = stampRect.left - canvasRect.left;
+        const relativeY = stampRect.top - canvasRect.top;
+
+        const scaleX = baseSize.width / baseSize.canvasWidth;
+        const scaleY = baseSize.height / baseSize.canvasHeight;
+
+        const pdfX = relativeX * scaleX;
+        const pdfY = (baseSize.canvasHeight - relativeY - stampWrapper.offsetHeight) * scaleY;
+        const pdfW = stampWrapper.offsetWidth * scaleX;
+        const pdfH = stampWrapper.offsetHeight * scaleY;
+
+        // Apply to each target page
+        for (let pageIndex of targetPages) {
+            const page = pdfDoc.getPages()[pageIndex];
+            page.drawImage(embeddedImg, {
+            x: pdfX,
+            y: pdfY,
+            width: pdfW,
+            height: pdfH,
+            });
+        }
+
+        const newPdfBytes = await pdfDoc.save();
+        const blob = new Blob([newPdfBytes], { type: "application/pdf" });
+        const url = URL.createObjectURL(blob);
+        window.open(url);
+    });
+    </script>
+</body>
+</html>
+
+
+
